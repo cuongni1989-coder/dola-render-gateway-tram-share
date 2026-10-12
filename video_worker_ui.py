@@ -111,11 +111,17 @@ async ({msToken, fp}) => {
 """;
 
 
-def find_captcha_frame(page):
-    for f in page.frames:
-        if CAPTCHA_FRAME_KEY in f.url:
-            return f
-    return None
+async def verification_visible(page):
+    for frame in page.frames:
+        if CAPTCHA_FRAME_KEY in frame.url:
+            try:
+                element = await frame.frame_element()
+                if await element.is_visible():
+                    return True
+            except Exception:
+                # Detached frames are no longer an active challenge.
+                continue
+    return False
 
 
 
@@ -354,11 +360,10 @@ async def generate_video(account: str, prompt: str, ratio: str = None,
             # This deployment never attempts to solve or bypass a challenge.
             for _ in range(20):
                 await page.wait_for_timeout(1000)
-                frame = find_captcha_frame(page)
-                if frame:
+                if await verification_visible(page):
                     print(f"[{account}] Verification required: open the private browser screen.", flush=True)
                     deadline = time.monotonic() + config.MANUAL_VERIFY_TIMEOUT
-                    while find_captcha_frame(page):
+                    while await verification_visible(page):
                         if time.monotonic() >= deadline:
                             raise RiskControlError("Manual verification required; operator did not complete it in time")
                         await page.wait_for_timeout(1000)

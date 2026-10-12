@@ -619,5 +619,3 @@ async def admin_key_delete(key: str, x_admin_key: str | None = Header(default=No
 
 # Dashboard single-file frontend
 app.mount("/", StaticFiles(directory="web", html=True), name="web")
-
-

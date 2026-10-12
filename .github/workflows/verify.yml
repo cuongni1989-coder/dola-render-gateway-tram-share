@@ -2,7 +2,7 @@ name: Verify shared VPS deployment
 on:
   pull_request:
   push:
-    branches: [main, codex/team-vps-20261012]
+    branches: [main]
 permissions:
   contents: read
 jobs:

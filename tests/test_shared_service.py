@@ -16,6 +16,7 @@ from browser_pool import BrowserPool
 from store import TaskStore
 from video_links import signature
 from media import PublicResolver, validate_reference_urls
+from video_worker_ui import verification_visible
 
 
 @pytest.fixture
@@ -193,3 +194,23 @@ def test_reference_images_reject_private_ips_and_dns_rebinding():
 
     with pytest.raises(ValueError):
         asyncio.run(PublicResolver(ChangedDNS()).resolve("public-image.example.com", 443))
+
+
+def test_manual_verification_finishes_when_service_hides_its_frame():
+    class Frame:
+        url = "https://service.example/bdcaptcha.html"
+        visible = True
+
+        async def frame_element(self):
+            return self
+
+        async def is_visible(self):
+            return self.visible
+
+    class Page:
+        frames = [Frame()]
+
+    page = Page()
+    assert asyncio.run(verification_visible(page))
+    page.frames[0].visible = False
+    assert not asyncio.run(verification_visible(page))
