@@ -1,0 +1,58 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      DOLA_DB_PATH: /app/data/tasks.db
+      DOLA_POOL_DB_PATH: /app/data/pool_usage.db
+      DOLA_DOWNLOAD_DIR: /app/downloads
+      DOLA_HEADLESS: "0"
+    shm_size: 1gb
+    volumes:
+      - accounts:/app/accounts
+      - downloads:/app/downloads
+      - data:/app/data
+    # The private browser can only be opened through an SSH tunnel.
+    ports:
+      - "127.0.0.1:6080:6080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    stop_grace_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    env_file: .env.production
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  accounts:
+  downloads:
+  data:
+  caddy_data:
+  caddy_config:

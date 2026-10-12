@@ -1,5 +1,11 @@
 # Dola Render Gateway
 
+## Team website deployment
+
+For this fork's shared, always-on website, follow [the Vietnamese VPS deployment guide](deploy/README.vi.md).
+It includes Docker Compose, automatic HTTPS, persistent storage, a team video creation page at `/studio`,
+private manual account login, and production authentication. Production mode does not automatically solve verification challenges.
+
 A high-performance session coordinator and OpenAI-compatible video generation API service.
 
 Provides automated browser session isolation, task queue distribution, extended duration handling, and an intuitive web management dashboard.
@@ -61,7 +67,7 @@ source .venv/bin/activate       # On Windows: .venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
-playwright install chromium
+python -m patchright install chromium
 ```
 
 ### 3. Configure
@@ -80,7 +86,7 @@ export DOLA_MAX_CONCURRENCY=3
 ```bash
 uvicorn server:app --host 0.0.0.0 --port 8000
 ```
-Open **http://127.0.0.1:8000/web** to access the Admin Dashboard.
+Open **http://127.0.0.1:8000/** to access the Admin Dashboard, or **http://127.0.0.1:8000/studio** to create a video.
 
 
 ### 🌐 SonicVoice (For Voice Clone)
@@ -95,3 +101,4 @@ Open **http://127.0.0.1:8000/web** to access the Admin Dashboard.
 
 ## 📜 License
 For educational and internal testing purposes.
+

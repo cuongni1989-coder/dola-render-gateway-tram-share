@@ -15,6 +15,22 @@ import config
 _ALLOWED_IMAGE_FORMATS = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp"}
 
 
+class PublicResolver(aiohttp.abc.AbstractResolver):
+    """Reject private addresses at connection time, including DNS changes after validation."""
+
+    def __init__(self, delegate=None):
+        self._delegate = delegate or aiohttp.resolver.DefaultResolver()
+
+    async def resolve(self, host, port=0, family=socket.AF_INET):
+        records = await self._delegate.resolve(host, port, family)
+        if not records or any(not ipaddress.ip_address(row["host"]).is_global for row in records):
+            raise ValueError("Reference image connection points to a private or reserved IP address")
+        return records
+
+    async def close(self):
+        await self._delegate.close()
+
+
 def validate_public_url(url: str) -> str:
     """Accepts only public HTTP(S) URLs, blocks localhost, private network, and credentials."""
     if not isinstance(url, str) or len(url) > 4096:
@@ -112,11 +128,9 @@ async def _read_response_image(resp: aiohttp.ClientResponse) -> tuple[bytes, str
 
 async def download_one_image(session: aiohttp.ClientSession, url: str, dest: Path) -> Path:
     current = await _validate_url_async(url)
-    # Try configured proxy first, fall back to direct connection if blocked
-    proxies = []
-    if config.PROXY:
-        proxies.append(config.PROXY)
-    proxies.append(None)
+    # Reference images use direct, locally validated DNS. A remote proxy could resolve a
+    # user-supplied hostname into its own private network and bypass our address checks.
+    proxies = [None]
     last_error = None
     for proxy in proxies:
         current = await _validate_url_async(url)
@@ -151,7 +165,8 @@ async def download_reference_images(urls: list[str], task_id: str) -> tuple[Path
         return None, []
     root = Path(tempfile.mkdtemp(prefix=f"dola_ref_{task_id}_"))
     try:
-        async with aiohttp.ClientSession() as session:
+        connector = aiohttp.TCPConnector(resolver=PublicResolver())
+        async with aiohttp.ClientSession(connector=connector, trust_env=False) as session:
             paths = []
             for index, url in enumerate(urls):
                 paths.append(str(await download_one_image(session, url, root / f"image_{index}")))

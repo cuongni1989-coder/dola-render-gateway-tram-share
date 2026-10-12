@@ -9,6 +9,7 @@ Admin Dashboard: GET / -> web/index.html; Admin API /api/admin/*
 """
 import asyncio
 import hashlib
+import hmac
 import json
 import re
 import shutil
@@ -16,9 +17,11 @@ import time
 import uuid
 from collections import defaultdict
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 import config
@@ -26,14 +29,15 @@ from add_account import add_account_flow
 from browser_pool import AllAccountsLimitedError, AllAccountsQuotaBlockedError, BrowserPool
 from media import download_reference_images, validate_reference_urls
 from store import PendingTaskLimitExceeded, TaskQuotaExceeded, TaskStore
+from video_links import authorized, signed_url
 
 Path(config.DOWNLOAD_DIR).mkdir(parents=True, exist_ok=True)
 Path("web").mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="dola-pool", version="0.4.0")
+app = FastAPI(title="dola-pool", version="0.5.0")
 
 store = TaskStore(config.DB_PATH)
-pool = BrowserPool(max_concurrency=config.MAX_CONCURRENCY)
+pool = BrowserPool(max_concurrency=config.MAX_CONCURRENCY, db_path=config.POOL_DB_PATH)
 
 app.mount("/videos", StaticFiles(directory=config.DOWNLOAD_DIR), name="videos")
 
@@ -45,7 +49,7 @@ SIZE_TO_RATIO = {
     "720x1280": "9:16", "1080x1920": "9:16",
     "1024x1024": "1:1", "1440x1080": "4:3", "1080x1440": "3:4",
 }
-SUPPORTED_DURATIONS = (10, 15, 30)
+SUPPORTED_DURATIONS = (10, 15, 30) if config.EXTENSION_ENABLED else (10, 15)
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 
 
@@ -109,7 +113,10 @@ def _env_client(key: str) -> dict:
 def _auth(authorization):
     """Returns client policy for caller; empty key enables dev mode."""
     if not config.API_KEYS and not store.has_enabled_keys():
-        return _anonymous_client()
+        if config.PRODUCTION and not authorization:
+            raise HTTPException(503, "Administrator must create a team API key before using this service")
+        if not config.PRODUCTION:
+            return _anonymous_client()
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "missing bearer token")
     key = authorization[7:].strip()
@@ -133,8 +140,29 @@ def _auth(authorization):
 def _admin_auth(x_admin_key: str | None):
     if not config.ADMIN_KEY:
         return
-    if x_admin_key != config.ADMIN_KEY:
+    if not hmac.compare_digest((x_admin_key or "").encode(), config.ADMIN_KEY.encode()):
         raise HTTPException(401, "invalid admin key")
+
+
+def _download_link(url: str | None) -> str | None:
+    if not url:
+        return None
+    filename = unquote(urlparse(url).path.rsplit("/", 1)[-1])
+    return signed_url(config.PUBLIC_BASE, filename, config.VIDEO_SIGNING_KEY)
+
+
+@app.middleware("http")
+async def protect_downloads(request, call_next):
+    if request.url.path.startswith("/videos/") and config.VIDEO_SIGNING_KEY:
+        if not authorized(request.url.path, request.query_params.get("expires"),
+                          request.query_params.get("signature"), config.VIDEO_SIGNING_KEY):
+            return JSONResponse({"detail": "Video link is invalid or expired"}, status_code=401)
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "same-origin"
+    if request.url.path.startswith(("/videos/", "/api/", "/v1/")):
+        response.headers["Cache-Control"] = "private, no-store"
+    return response
 
 
 def _normalize_allowed_durations(values) -> list[int]:
@@ -343,12 +371,14 @@ async def get_video(task_id: str, authorization: str | None = Header(default=Non
         raise HTTPException(404, "task not found")
     return TaskResponse(
         id=row["id"], status=row["status"], model=row["model"],
-        prompt=row["prompt"], video_url=row["video_url"], error=row["error"],
+        prompt=row["prompt"], video_url=_download_link(row["video_url"]), error=row["error"],
     )
 
 
 @app.get("/health")
-async def health():
+async def health(x_admin_key: str | None = Header(default=None)):
+    if config.PRODUCTION:
+        _admin_auth(x_admin_key)
     return {
         "ok": True,
         "accounts": pool.account_status(),
@@ -356,6 +386,28 @@ async def health():
         "pending_tasks": store.pending_task_count(),
         "max_pending_tasks": config.MAX_PENDING_TASKS,
     }
+
+
+@app.get("/ready")
+async def ready():
+    """Process readiness only; this does not claim Dola accounts can generate videos."""
+    store.pending_task_count()
+    return {"ok": True, "version": app.version}
+
+
+@app.get("/capabilities")
+async def capabilities():
+    return {"durations": list(SUPPORTED_DURATIONS)}
+
+
+@app.get("/studio", include_in_schema=False)
+async def studio():
+    return FileResponse("web/studio.html")
+
+
+@app.get("/web", include_in_schema=False)
+async def legacy_dashboard():
+    return RedirectResponse("/")
 
 
 # ===== Admin Dashboard API =====
@@ -399,7 +451,7 @@ class KeyPatch(BaseModel):
 async def admin_login(body: AdminLogin):
     if not config.ADMIN_KEY:
         return {"ok": True, "auth_required": False}
-    if body.key == config.ADMIN_KEY:
+    if hmac.compare_digest(body.key.encode(), config.ADMIN_KEY.encode()):
         return {"ok": True, "auth_required": True}
     raise HTTPException(401, "wrong admin key")
 
@@ -407,7 +459,7 @@ async def admin_login(body: AdminLogin):
 @app.get("/api/admin/accounts")
 async def admin_accounts(x_admin_key: str | None = Header(default=None)):
     _admin_auth(x_admin_key)
-    return {"accounts": pool.list_accounts()}
+    return {"accounts": pool.list_accounts(), "manual_login_only": config.PRODUCTION}
 
 
 @app.patch("/api/admin/accounts/{name}")
@@ -463,6 +515,8 @@ async def _run_add_job(name: str, email: str, password: str, totp: str):
 @app.post("/api/admin/accounts", status_code=202)
 async def admin_account_add(body: AccountAdd, x_admin_key: str | None = Header(default=None)):
     _admin_auth(x_admin_key)
+    if config.PRODUCTION:
+        raise HTTPException(403, "Use the private server browser for manual login; Google credentials are not accepted here")
     if not NAME_RE.match(body.name):
         raise HTTPException(400, "invalid account name")
     if body.name in pool.accounts:
@@ -482,7 +536,10 @@ async def admin_jobs(x_admin_key: str | None = Header(default=None)):
 @app.get("/api/admin/tasks")
 async def admin_tasks(limit: int = 50, x_admin_key: str | None = Header(default=None)):
     _admin_auth(x_admin_key)
-    return {"tasks": store.recent_tasks(min(max(limit, 1), 200))}
+    tasks = store.recent_tasks(min(max(limit, 1), 200))
+    for task in tasks:
+        task["video_url"] = _download_link(task.get("video_url"))
+    return {"tasks": tasks}
 
 
 @app.get("/api/admin/stats")
@@ -562,4 +619,5 @@ async def admin_key_delete(key: str, x_admin_key: str | None = Header(default=No
 
 # Dashboard single-file frontend
 app.mount("/", StaticFiles(directory="web", html=True), name="web")
+
 

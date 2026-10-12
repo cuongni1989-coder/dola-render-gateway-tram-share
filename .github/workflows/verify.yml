@@ -1,0 +1,53 @@
+name: Verify shared VPS deployment
+on:
+  pull_request:
+  push:
+    branches: [main, codex/team-vps-20261012]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: python -m compileall -q . && python -m pytest -q && bash -n deploy/entrypoint.sh
+      - name: Validate Compose and build image
+        run: |
+          python deploy/configure.py video.example.com
+          docker compose config --quiet
+          docker compose build
+      - name: Start the packaged service
+        run: |
+          docker compose up -d --no-deps app
+          for attempt in $(seq 1 60); do
+            if docker compose exec -T app python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=2)"; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose logs app
+          exit 1
+      - name: Check packaged studio and private endpoints
+        run: |
+          docker compose exec -T app python - <<'PY'
+          import urllib.request, urllib.error
+          assert b'Dola Video Studio' in urllib.request.urlopen('http://127.0.0.1:8000/studio').read()
+          for path in ['/health', '/api/admin/accounts', '/videos/no-token.mp4']:
+              try:
+                  urllib.request.urlopen('http://127.0.0.1:8000' + path)
+              except urllib.error.HTTPError as error:
+                  assert error.code == 401
+              else:
+                  raise AssertionError(path + ' must require authentication')
+          PY
+      - name: Check the browser interface with simulated video responses
+        run: |
+          docker cp tests/browser_smoke.py "$(docker compose ps -q app)":/tmp/browser_smoke.py
+          docker compose exec -T app python /tmp/browser_smoke.py
+      - if: always()
+        run: docker compose down

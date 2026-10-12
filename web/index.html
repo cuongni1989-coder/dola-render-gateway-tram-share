@@ -89,6 +89,7 @@ td .prompt{display:block;max-width:340px;overflow:hidden;text-overflow:ellipsis;
     <label><input type="checkbox" id="autoCk" checked onchange="autoRefresh=this.checked">Auto Refresh</label>
     <span id="lastUpdate"></span>
     <button class="btn" onclick="refresh()">Refresh</button>
+    <a class="btn" href="/studio">Create Video</a>
     <button class="btn" onclick="logout()" title="Logout">Logout</button>
   </div>
 </header>
@@ -144,7 +145,9 @@ td .prompt{display:block;max-width:340px;overflow:hidden;text-overflow:ellipsis;
 
 <script>
 const LS_KEY='dola_admin_key';
-let adminKey=localStorage.getItem(LS_KEY)||'';
+let adminKey=sessionStorage.getItem(LS_KEY)||'';
+localStorage.removeItem(LS_KEY);
+let manualLoginOnly=true;
 let autoRefresh=true, curTab='dash', timer=null;
 
 function q(s){return document.querySelector(s);}
@@ -168,10 +171,10 @@ async function submitLogin(){
   const key=q('#loginKey').value;
   try{await api('/api/admin/login',{method:'POST',body:{key}});}
   catch(e){q('#loginErr').style.display='block';return;}
-  adminKey=key;localStorage.setItem(LS_KEY,key);
+  adminKey=key;sessionStorage.setItem(LS_KEY,key);
   hide('loginMask');refresh();
 }
-function logout(){adminKey='';localStorage.removeItem(LS_KEY);showLogin();}
+function logout(){adminKey='';sessionStorage.removeItem(LS_KEY);showLogin();}
 
 function switchTab(t){
   curTab=t;
@@ -245,6 +248,7 @@ async function setSched(name,on){
 /* ---- Accounts ---- */
 async function loadAccounts(){
   const [a,j]=await Promise.all([api('/api/admin/accounts'),api('/api/admin/jobs')]);
+  manualLoginOnly=!!a.manual_login_only;
   const jobs=j.jobs||{};
   const rows=a.accounts.map(x=>{
     const jb=jobs[x.name];
@@ -280,6 +284,10 @@ async function delAccount(name){
 }
 
 function openAddAccount(){
+  if(manualLoginOnly){
+    showDlg(`<h2>Sign in on the private server browser</h2><p>The server administrator opens the secure browser screen and signs in to Dola directly. Google passwords and 2FA secrets are not entered on this shared website.</p><p>After login, refresh Accounts. Pause scheduling and wait for an account to finish its current job before signing in again.</p><button class="btn" onclick="hide('dlg')">Close</button>`);
+    return;
+  }
   let def='acc2';try{const n=document.querySelectorAll('#accountsTable tbody tr').length;def='acc'+(n+1);}catch(e){}
   showDlg(`<h2>Add Account</h2>
     <label>Account Name</label><input id="f_name" value="${def}">
@@ -403,3 +411,4 @@ timer=setInterval(()=>{if(autoRefresh)refresh();},10000);
 </script>
 </body>
 </html>
+
