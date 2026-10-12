@@ -1,16 +1,13 @@
-"""Video generation worker v2: UI automation with OpenCV slider puzzle solver."""
+"""Video generation worker with operator-completed verification."""
 import asyncio
 import json
-import random
 import re
 import sys
 import time
 from pathlib import Path
 
-import aiohttp
 from patchright.async_api import async_playwright
 
-from gap import find_gap_x
 
 import config
 from browser import cookie_value, launch_account_context
@@ -114,17 +111,19 @@ async ({msToken, fp}) => {
 """;
 
 
-def find_captcha_frame(page):
-    for f in page.frames:
-        if CAPTCHA_FRAME_KEY in f.url:
-            return f
-    return None
+async def verification_visible(page):
+    for frame in page.frames:
+        if CAPTCHA_FRAME_KEY in frame.url:
+            try:
+                element = await frame.frame_element()
+                if await element.is_visible():
+                    return True
+            except Exception:
+                # Detached frames are no longer an active challenge.
+                continue
+    return False
 
 
-async def _fetch_bytes(url: str) -> bytes:
-    async with aiohttp.ClientSession() as s:
-        async with s.get(url, proxy=config.PROXY or None) as r:
-            return await r.read()
 
 
 
@@ -165,78 +164,8 @@ async def attach_reference_images(page, image_paths: list[str]) -> None:
         page.remove_listener("response", on_response)
 
 
-def _gen_track(distance: float):
-    """Generates humanized mouse drag trajectory."""
-    steps = random.randint(45, 65)
-    overshoot = random.uniform(3, 9)
-    pts = []
-    for i in range(1, steps + 1):
-        t = i / steps
-        s = 10 * t**3 - 15 * t**4 + 6 * t**5
-        x = (distance + overshoot) * s
-        y = random.uniform(-1.5, 1.5) if 0.1 < t < 0.95 else 0
-        pts.append((x, y, random.randint(8, 22)))
-    for i in range(1, random.randint(3, 5) + 1):
-        pts.append((distance + overshoot * (1 - i / 5), random.uniform(-0.8, 0.8), random.randint(15, 30)))
-    return pts
 
 
-async def solve_slider(page, frame, attempt: int) -> bool:
-    """Solves captcha slider notch within iframe and performs drag."""
-    await frame.wait_for_selector("img", timeout=15000)
-    await frame.evaluate("""async () => {
-        const t0 = Date.now();
-        while (Date.now() - t0 < 10000) {
-            const imgs = [...document.images];
-            if (imgs.length >= 2 && imgs.every(im => im.complete && im.naturalWidth > 0)) return;
-            await new Promise(r => setTimeout(r, 200));
-        }
-        throw new Error("captcha images load timeout");
-    }""")
-    await page.wait_for_timeout(800)
-
-    imgs = await frame.evaluate("""() => [...document.images].map(im => ({
-        src: im.src, w: im.naturalWidth, h: im.naturalHeight,
-        bw: im.getBoundingClientRect().width,
-        left: im.getBoundingClientRect().left,
-    }))""")
-    bg = next((i for i in imgs if ".jpeg" in i["src"] or "-2." in i["src"]), None)
-    piece = next((i for i in imgs if i is not bg and (".png" in i["src"] or "-1." in i["src"])), None)
-    if not bg or not piece:
-        print("  ✗ Captcha background or puzzle image not found", flush=True)
-        return False
-
-    bg_bytes = await _fetch_bytes(bg["src"])
-    piece_bytes = await _fetch_bytes(piece["src"])
-    Path("dbg_bg.jpg").write_bytes(bg_bytes)
-    Path("dbg_piece.png").write_bytes(piece_bytes)
-
-    gap_x, conf = find_gap_x(bg_bytes, piece_bytes)
-    scale = bg["bw"] / bg["w"] if bg["w"] else 340 / 552
-    distance = (gap_x - (piece["left"] - bg["left"]) / scale) * scale
-    print(f"  [solve#{attempt}] gap_x={gap_x} conf={conf:.3f} scale={scale:.2f} distance={distance:.0f}px", flush=True)
-
-    btn = frame.locator(".captcha-slider-btn")
-    bb = await btn.bounding_box()
-    if not bb:
-        print("  ✗ Drag handle .captcha-slider-btn not found", flush=True)
-        return False
-    sx, sy = bb["x"] + bb["width"] / 2, bb["y"] + bb["height"] / 2
-    await page.mouse.move(sx, sy)
-    await page.wait_for_timeout(random.randint(150, 350))
-    await page.mouse.down()
-    await page.wait_for_timeout(random.randint(80, 180))
-    for dx, dy, dt in _gen_track(distance):
-        await page.mouse.move(sx + dx, sy + dy)
-        await asyncio.sleep(dt / 1000)
-    await page.wait_for_timeout(random.randint(120, 260))
-    await page.mouse.up()
-
-    for _ in range(10):
-        await page.wait_for_timeout(700)
-        if not find_captcha_frame(page):
-            return True
-    return False
 
 
 
@@ -323,7 +252,7 @@ async def resume_video(account: str, conversation_id: str, timeout: int,
                        on_poll=None, on_balance=None) -> dict:
     """Recovers accepted session after server restart without re-sending prompt."""
     async with async_playwright() as p:
-        context = await launch_account_context(p, account, headless=False, use_extension=True)
+        context = await launch_account_context(p, account, headless=False, use_extension=config.EXTENSION_ENABLED)
         try:
             page = context.pages[0] if context.pages else await context.new_page()
             await page.goto(f"https://www.dola.com/chat/{conversation_id}",
@@ -336,7 +265,7 @@ async def resume_video(account: str, conversation_id: str, timeout: int,
 
 async def generate_video(account: str, prompt: str, ratio: str = None,
                          duration: int = None, timeout: int = None,
-                         model: str = "seedance_v2.0", use_extension: bool = True,
+                         model: str = "seedance_v2.0", use_extension: bool | None = None,
                          on_conversation_id=None, on_poll=None, on_balance=None,
                          reference_image_paths: list[str] | None = None) -> dict:
     """Full generation flow via UI automation."""
@@ -350,6 +279,8 @@ async def generate_video(account: str, prompt: str, ratio: str = None,
         raise ValueError(f"Unsupported model: {model} (supported: seedance-2.0 / seedance-2.5)")
     if duration is not None and duration not in (10, 15, 30):
         raise ValueError("Dola supports durations of 10s, 15s, and 30s via extension")
+    if use_extension is None:
+        use_extension = config.EXTENSION_ENABLED
     if duration == 30 and not use_extension:
         raise ValueError("30s generation requires Dola30 extension enabled")
     # 30s videos require extended generation timeout
@@ -425,28 +356,19 @@ async def generate_video(account: str, prompt: str, ratio: str = None,
             await page.keyboard.press("Enter")
             print(f"[{account}] UI submitted prompt: {prompt[:40]}", flush=True)
 
-            # ---- Captcha Solver (up to 3 attempts) ----
-            solved_or_absent = False
-            for attempt in range(1, 4):
-                frame = None
-                for _ in range(20):
-                    await page.wait_for_timeout(1000)
-                    frame = find_captcha_frame(page)
-                    if frame:
-                        break
-                if not frame:
-                    solved_or_absent = True
+            # Service verification is completed by an operator in the private browser.
+            # This deployment never attempts to solve or bypass a challenge.
+            for _ in range(20):
+                await page.wait_for_timeout(1000)
+                if await verification_visible(page):
+                    print(f"[{account}] Verification required: open the private browser screen.", flush=True)
+                    deadline = time.monotonic() + config.MANUAL_VERIFY_TIMEOUT
+                    while await verification_visible(page):
+                        if time.monotonic() >= deadline:
+                            raise RiskControlError("Manual verification required; operator did not complete it in time")
+                        await page.wait_for_timeout(1000)
+                    await page.wait_for_timeout(3000)
                     break
-                print(f"[{account}] Captcha detected, attempt {attempt} solving...", flush=True)
-                if await solve_slider(page, frame, attempt):
-                    print(f"[{account}] Captcha passed ✓", flush=True)
-                    await page.wait_for_timeout(3000)  # Wait for frontend auto-retry
-                    solved_or_absent = True
-                    break
-                print(f"[{account}] Captcha not passed, retrying...", flush=True)
-            if not solved_or_absent:
-                await page.screenshot(path="solve_fail.png")
-                raise RiskControlError("Captcha failed 3 times")
 
             # ---- Wait for real conversation_id ----
             conv_id = ""

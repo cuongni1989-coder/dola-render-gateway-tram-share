@@ -1,0 +1,10 @@
+{$DOLA_DOMAIN} {
+    encode zstd gzip
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Frame-Options DENY
+        X-Content-Type-Options nosniff
+        Referrer-Policy same-origin
+    }
+    reverse_proxy app:8000
+}

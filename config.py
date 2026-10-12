@@ -48,10 +48,24 @@ PROXY = os.getenv("DOLA_PROXY", "http://127.0.0.1:7890")
 HEADLESS = os.getenv("DOLA_HEADLESS", "1") == "1"
 
 # Base public URL for returning static video links
-PUBLIC_BASE = os.getenv("DOLA_PUBLIC_BASE", f"http://127.0.0.1:{PORT}")
+PUBLIC_BASE = os.getenv("DOLA_PUBLIC_BASE", f"http://127.0.0.1:{PORT}").rstrip("/")
 
 # Admin web dashboard password (empty = no auth)
 ADMIN_KEY = os.getenv("DOLA_ADMIN_KEY", "")
+PRODUCTION = os.getenv("DOLA_ENV", "development") == "production"
+VIDEO_SIGNING_KEY = os.getenv("DOLA_VIDEO_SIGNING_KEY", "")
+POOL_DB_PATH = os.getenv("DOLA_POOL_DB_PATH", "pool_usage.db")
+MANUAL_VERIFY_TIMEOUT = int(os.getenv("DOLA_MANUAL_VERIFY_TIMEOUT", "180"))
+
+if PRODUCTION:
+    from urllib.parse import urlparse
+    if len(ADMIN_KEY) < 32 or len(VIDEO_SIGNING_KEY) < 32:
+        raise ValueError("Production requires admin and video signing secrets of at least 32 characters")
+    public_url = urlparse(PUBLIC_BASE)
+    if public_url.scheme != "https" or not public_url.hostname or public_url.username or public_url.password:
+        raise ValueError("DOLA_PUBLIC_BASE must be an HTTPS origin in production")
+    if public_url.path or public_url.query or public_url.fragment:
+        raise ValueError("DOLA_PUBLIC_BASE must contain only the HTTPS origin")
 
 # Dola 30s / Watermark Removal Chromium extension path
 EXTENSION_DIR = os.getenv("DOLA_EXTENSION_DIR", "extensions/dola30")

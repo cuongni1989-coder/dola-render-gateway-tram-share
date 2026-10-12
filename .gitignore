@@ -1,5 +1,8 @@
 # --- secrets / local config ---
 .env.local
+.env.production
+backups/
+.pytest_cache/
 cookies.txt
 *.log
 
@@ -22,6 +25,7 @@ downloads/
 /*.json
 /*.txt
 !requirements.txt
+!requirements-dev.txt
 !README.md
 
 # --- one-off debug script (contains a signed CDN url) ---
