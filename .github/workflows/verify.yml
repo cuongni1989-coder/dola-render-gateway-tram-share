@@ -15,7 +15,7 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements-dev.txt
-      - run: python -m compileall -q . && python -m pytest -q && bash -n deploy/entrypoint.sh
+      - run: python -m compileall -q . && python -m pytest -q && bash -n deploy/entrypoint.sh deploy/bootstrap-ubuntu.sh
       - name: Validate Compose and build image
         run: |
           python deploy/configure.py video.example.com

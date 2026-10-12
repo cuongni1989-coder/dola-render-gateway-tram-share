@@ -30,6 +30,26 @@ hết hạn sau một giờ; ai có link hợp lệ có thể xem video trong th
 Không thay cấu hình các ứng dụng khác trên VPS. Bộ Compose này dùng cổng 80/443; nếu VPS đã có web server,
 quản trị viên phải gắn ứng dụng vào reverse proxy đang dùng hoặc triển khai trên VPS riêng.
 
+### Cài lần đầu trên VPS Ubuntu 24.04 riêng
+
+`deploy/bootstrap-ubuntu.sh DOMAIN VPS_IPV4` kiểm tra đúng IP máy chủ, hệ điều hành, dung lượng và cổng trước
+khi cài Docker từ kho chính thức. Script tải và chạy đúng revision ứng dụng `14876ef9a66ceffe0e43f7cdeab6095bbb12ab11`
+đã PASS CI Docker/trình duyệt, tạo cấu hình riêng và build/chạy dịch vụ trong `/opt/dola-gateway`.
+Không ghi đè thư mục đã tồn tại, không xóa gói Docker đang có, không đổi firewall/DNS và không in mật khẩu.
+Có thể dùng `--check-only` làm tham số thứ ba để chỉ chạy kiểm tra, không cài đặt.
+
+Ví dụ sau khi đăng nhập SSH và tải script từ revision đã kiểm tra của repo:
+
+```bash
+bash /root/dola-bootstrap.sh video.soulluvjsc.com 89.233.104.254
+```
+
+`APP_READY_OK` chỉ xác nhận API khởi động. `HTTPS_IPV4_READY_OK` xác nhận bản ghi A trỏ đúng VPS và HTTPS/readiness
+phản hồi qua IPv4; phải kiểm tra thêm bản ghi AAAA (nếu có) trước khi bàn giao.
+`HTTPS_PENDING` nghĩa là phải kiểm tra DNS/firewall trước khi bàn giao. `DOLA_LOGIN_PENDING` nghĩa là vẫn phải
+đăng nhập Dola rồi tạo một video thật. Nếu có `INSTALL_FAILED`, giữ nguyên thư mục/container và gửi dòng lỗi
+để kiểm tra; không xóa dữ liệu hoặc chạy lại cấu hình secret. Log cài đặt quyền 0600 nằm trong `/var/log/dola-install-*.log`.
+
 ## 2. Lấy mã nguồn và cấu hình
 
 Sau khi đăng nhập SSH vào VPS:
